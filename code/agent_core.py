@@ -630,28 +630,97 @@ class ForensicAuditAgent:
     def is_deletion_request(text: str) -> bool:
         """
         Multilingual determination of whether request authorizes deletion.
-        Strictly categorizes DSAR access, rectification, opt-outs, and login issues as NOT_APPLICABLE.
+        Returns True  → request is a valid deletion/erasure authorization.
+        Returns False → DSAR access, rectification, opt-out, login or account-retention request.
+        Covers explicit keywords AND indirect deletion signals like "remove my profile",
+        "clean my personal details", "profile is gone", "audit the deletion", etc.
         """
         t = str(text).lower()
-        if re.search(r"\b(do not close|leave the account active|leave my profile|leave my records)\b", t):
+
+        # ── Explicit NOT_APPLICABLE guards ─────────────────────────────────
+        if re.search(r"\b(do not close|leave the account active|leave my profile active|leave my records)\b", t):
             return False
         if re.search(r"\b(not asking for deletion|not a request to erase|don't delete|keep the account)\b", t):
             return False
         if re.search(r"\b(want to continue using|replace it with the new|change the email|reset the login|resetting the login)\b", t):
             return False
-        if re.search(r"\b(misspelled|correct my (data|information)|rectification)\b", t) and not re.search(r"\b(delete|erase|supprim|eliminar|excluir)\b", t):
+        if re.search(r"\b(misspelled|correct my (data|information)|rectification)\b", t) and not re.search(r"\b(delete|erase|supprim|eliminar|excluir|remov|clean|wipe)\b", t):
             return False
-        if re.search(r"\b(promotional emails|marketing lists only|unsubscribe|opt.?out of marketing)\b", t) and not re.search(r"\b(delete|erase|close.*account)\b", t):
+        if re.search(r"\b(promotional emails|marketing lists only|unsubscribe|opt.?out of marketing)\b", t) and not re.search(r"\b(delete|erase|close.*account|remov)\b", t):
             return False
-        if re.search(r"\b(information request|portable format|copy of last year|send me a copy|subject access request)\b", t) and ("not" in t or "leave" in t or "keep" in t):
+        if re.search(r"\b(information request|portable format|copy of last year|send me a copy|subject access request)\b", t) and ("not" in t or "leave" in t or "keep" in t) and not re.search(r"\b(delete|erase|remov)\b", t):
             return False
-        if re.search(r"\b(delete|erase|erased|erasure|close.*account|permanent.*delet|eliminat|supprim|削除|삭제|exclus|borrar|effacer)\b", t):
+
+        # ── Strong positive deletion signals ──────────────────────────────
+        # Explicit delete/erase/close keywords (multilingual)
+        # Explicit delete/erase/close keywords — complete words (multilingual)
+        if re.search(r"\b(delete|delet(?:ed|ion|ing)|erase|erased|erasure|wipe|wiped|purge|purged"
+                     r"|close\s+(?:the\s+)?account|permanent(?:ly)?\s+delet|account\s+delet"
+                     r"|borrar|slett|effacement|exclus|lösch|excluido|excluída"
+                     r"|eltávolít|διαγραφ)\b", t):
             return True
+        # Stem-only patterns (no trailing \b): match any conjugation/inflection
+        # elimin → eliminar, eliminación; suppr → suppression, supprimer, supprimé
+        # effac → effacer, effacé; exclu → exclu[ído]; borr → borrar, borrado
+        if re.search(r"\b(elimin|suppr|effac|lösch|sopprim|scrapp|cancell|удал|eliminar)", t):
+            return True
+
+        # CJK deletion keywords (no \b needed)
+        if "削除" in t or "삭제" in t or "遮蔽" in t or "완전한 삭제" in t:
+            return True
+        # "remove" in a deletion context
+        if re.search(r"\b(remove\s+(?:my|the|all|that|records?|profile|account|data|personal|identif|details?|entries|traces?|copies?|search\s+result))"
+                     r"|can\s+you\s+remove\b", t):
+            return True
+        if re.search(r"\b(removal\s+of\s+(?:my|personal|account))\b", t):
+            return True
+        # "clean" personal data out
+        if re.search(r"\b(clean(?:ed|ing)?\s+(?:my|the|out|personal|all))\b", t):
+            return True
+        # Profile / account gone / removed confirmation or request
+        if re.search(r"\b(profile\s+is\s+(?:gone|removed|absent|deleted)|account\s+(?:is\s+)?(?:gone|removed|absent|deleted))\b", t):
+            return True
+        # "handle" remaining data / "finish the deletion"
+        if re.search(r"\b(finish\s+the\s+deletion|complete\s+the\s+deletion|handle\s+(?:them|the remaining|the traces?|the records?))\b", t):
+            return True
+        # Audit/verify a deletion that was claimed complete
+        if re.search(r"\b(audit\s+the\s+deletion|verify\s+(?:that\s+)?(?:my\s+)?(?:account|profile|data|record)\s+(?:was|is|has\s+been)\s+(?:delet|remov|gone|purged|absent|erased))\b", t):
+            return True
+        # "investigate and finish", "check… removed"
+        if re.search(r"\b(investigate\s+and\s+(?:finish|complete)|check.*(?:remov|delet|gone|absent))\b", t):
+            return True
+        # "disable any synchronization", "switch off any integration"
+        if re.search(r"\b(disable\s+(?:any\s+)?(?:sync|synchronization|integration)|switch\s+off\s+(?:any\s+)?integration)\b", t) and re.search(r"\b(remov|delet|gone|absent|traces?)\b", t):
+            return True
+        # Tombstone / redact personal details intent
+        if re.search(r"\b(remove\s+my\s+(?:name|contact|personal)\s+details?|keeping\s+(?:only\s+)?(?:an?\s+)?internal\s+(?:delet|reference))\b", t):
+            return True
+        # "treat this message as a request for … deletion"
+        if re.search(r"\b(treat\s+this\s+(?:message|request)\s+as\s+a\s+request\s+for\s+(?:permanent\s+)?(?:account\s+)?delet)\b", t):
+            return True
+        # "have already been removed/deleted" — audit/confirm phrasing
+        if re.search(r"\b(have\s+already\s+been\s+(?:remov|delet|purged|erase)|already\s+(?:been\s+)?(?:remov|delet|purged))"
+                     r"|(?:tell\s+me\s+whether|confirm\s+(?:that|whether)).*(?:remov|delet|gone|absent)\b", t):
+            return True
+        # Legacy exact strings
         if "personal-data deletion" in t or "account-deletion" in t:
             return True
         if "remove my account" in t or "close this account" in t:
             return True
-        return True
+
+        return False
+    def resolve_subject(self, email: str) -> Tuple[Optional[str], Set[str]]:
+        """Resolve stable user_id and transitive closure of identifiers for a given email."""
+        norm_email = email.strip().lower()
+        uid = self.email_to_uid.get(norm_email)
+        if not uid:
+            for u in self.users:
+                if u["email"].strip().lower() == norm_email:
+                    uid = u["user_id"]
+                    break
+        if not uid:
+            return None, {norm_email}
+        return uid, self.uid_to_identifiers[uid]
 
     def audit_case(self, request: Dict[str, str]) -> Tuple[str, List[Dict[str, Any]]]:
         """
